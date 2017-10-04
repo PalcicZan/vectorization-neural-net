@@ -1,0 +1,12 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/Debug
+/Release
+/.vs/NeuralNet_vs2017/v15
+/Tmpl2017-02_debug.pdb
+/Tmpl2017-02_debug.exe
+/Tmpl2017-02.pdb
+/Tmpl2017-02.exe
+/data

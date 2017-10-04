@@ -1,0 +1,251 @@
+//-------------------------------------------------------------------------
+// Simple back-propagation neural network example
+// Based on Bobby Anguelov's code
+// MIT license: https://opensource.org/licenses/MIT
+//-------------------------------------------------------------------------
+
+#include "..\precomp.h"
+
+namespace Tmpl8 {
+
+Network::Network()
+{
+	// initialize neural net
+	InitializeNetwork();
+	InitializeWeights();
+	// initialize trainer (calloc: malloc + clear to zero)
+	deltaInputHidden = (float*)calloc( (INPUTSIZE + 1) * (NUMHIDDEN + 1), sizeof( float ) );
+	deltaHiddenOutput = (float*)calloc( (NUMHIDDEN + 1) * NUMOUTPUT, sizeof( float ) );
+	errorGradientsHidden = (float*)calloc( NUMHIDDEN + 1, sizeof( float ) );
+	errorGradientsOutput = (float*)calloc( NUMOUTPUT, sizeof( float ) );
+}
+
+void Network::InitializeNetwork()
+{
+	// create storage and initialize the neurons and the outputs
+	// add bias neurons
+	const int totalNumInputs = INPUTSIZE + 1, totalNumHiddens = NUMHIDDEN + 1;
+	memset( inputNeurons, 0, INPUTSIZE * 4 );
+	memset( hiddenNeurons, 0, NUMHIDDEN * 4 );
+	memset( outputNeurons, 0, NUMOUTPUT * 4 );
+	memset( clampedOutputs, 0, NUMOUTPUT * 4 );
+	// set bias values
+	inputNeurons[INPUTSIZE] = hiddenNeurons[NUMHIDDEN] = -1.0f;
+	// create storage and initialize and layer weights
+	weightsInputHidden = new float[totalNumInputs * totalNumHiddens];
+	weightsHiddenOutput = new float[totalNumHiddens * NUMOUTPUT];
+}
+
+void Network::InitializeWeights()
+{
+	random_device rd;
+	mt19937 generator( rd() );
+	const float distributionRangeHalfWidth = 2.4f / INPUTSIZE;
+	const float standardDeviation = distributionRangeHalfWidth * 2 / 6;
+	normal_distribution<> normalDistribution( 0, standardDeviation );
+	// set weights to normally distributed random values between [-2.4 / numInputs, 2.4 / numInputs]
+	for( int i = 0; i <= INPUTSIZE; i++ ) for( int j = 0; j < NUMHIDDEN; j++ )
+	{
+		const int weightIdx = GetInputHiddenWeightIndex( i, j );
+		weightsInputHidden[weightIdx] = (float)normalDistribution( generator );
+	}
+	// set weights to normally distributed random values between [-2.4 / numInputs, 2.4 / numInputs]
+	for( int i = 0; i <= NUMHIDDEN; i++ ) for( int j = 0; j < NUMOUTPUT; j++ )
+	{
+		const int weightIdx = GetHiddenOutputWeightIndex( i, j );
+		weightsHiddenOutput[weightIdx] = (float)normalDistribution( generator );
+	}
+}
+
+void Network::LoadWeights( const float* weights )
+{
+	const int numInputHiddenWeights = (INPUTSIZE + 1) * (NUMHIDDEN + 1);
+	const int numHiddenOutputWeights = (NUMHIDDEN + 1) * NUMOUTPUT;
+	int weightIdx = 0;
+	for( int i = 0; i < numInputHiddenWeights; i++ ) weightsInputHidden[i] = weights[weightIdx++];
+	for( int i = 0; i < numHiddenOutputWeights; i++ ) weightsHiddenOutput[i] = weights[weightIdx++];
+}
+
+void Network::SaveWeights( float* weights )
+{
+	const int numInputHiddenWeights = (INPUTSIZE + 1) * (NUMHIDDEN + 1);
+	const int numHiddenOutputWeights = (NUMHIDDEN + 1) * NUMOUTPUT;
+	int weightIdx = 0;
+	for( int i = 0; i < numInputHiddenWeights; i++ ) weights[weightIdx++] = weightsInputHidden[i];
+	for( int i = 0; i < numHiddenOutputWeights; i++ ) weights[weightIdx++] = weightsHiddenOutput[i];
+}
+
+float Network::GetHiddenErrorGradient( int hiddenIdx ) const
+{
+	// get sum of hidden->output weights * output error gradients
+	float weightedSum = 0;
+	for( int i = 0; i < NUMOUTPUT; i++ )
+	{
+		const int weightIdx = GetHiddenOutputWeightIndex( hiddenIdx, i );
+		weightedSum += weightsHiddenOutput[weightIdx] * errorGradientsOutput[i];
+	}
+	// return error gradient
+	return hiddenNeurons[hiddenIdx] * (1.0f - hiddenNeurons[hiddenIdx]) * weightedSum;
+}
+
+void Network::Train( const TrainingData& trainingData )
+{
+	// reset training state
+	currentEpoch = 0;
+	trainingSetAccuracy = validationSetAccuracy = generalizationSetAccuracy = 0;
+	trainingSetMSE = validationSetMSE = generalizationSetMSE = 0;
+	// print header
+	printf( " Neural Network Training Starting: \n" );
+	printf( "==========================================================================\n" );
+	printf( " LR: %f, momentum: %f, max epochs: %i\n", LEARNINGRATE, MOMENTUM, MAXEPOCHS );
+	printf( " %i input neurons, %i hidden neurons, %i output neurons\n", INPUTSIZE, NUMHIDDEN, NUMOUTPUT );
+	printf( "==========================================================================\n" );
+	// train network using training dataset for training and generalization dataset for testing
+	while ((trainingSetAccuracy < TARGETACCURACY || generalizationSetAccuracy < TARGETACCURACY) && currentEpoch < MAXEPOCHS)
+	{
+		// use training set to train network
+		timer t;
+		t.reset();
+		RunEpoch( trainingData.trainingSet );
+		float epochTime = t.elapsed();
+		// get generalization set accuracy and MSE
+		GetSetAccuracyAndMSE( trainingData.generalizationSet, generalizationSetAccuracy, generalizationSetMSE );
+		printf( "Epoch: %03i - TS accuracy: %4.1f, MSE: %4.4f GS accuracy: %4.1f, in %06.1fms\n", currentEpoch, trainingSetAccuracy, trainingSetMSE, generalizationSetAccuracy, epochTime );
+		currentEpoch++;
+	}
+	// get validation set accuracy and MSE
+	GetSetAccuracyAndMSE( trainingData.validationSet, validationSetAccuracy, validationSetMSE );
+	// print validation accuracy and MSE
+	printf( "\nTraining complete. Epochs: %i\n", currentEpoch );
+	printf( " Validation set accuracy: %f\n Validation set MSE: %f\n", validationSetAccuracy, validationSetMSE );
+}
+
+void Network::RunEpoch( const TrainingSet& set )
+{
+	float incorrectEntries = 0, MSE = 0;
+	for( int i = 0; i < set.size; i++ )
+	{
+		const TrainingEntry& entry = set.entry[i];
+		// feed inputs through network and back propagate errors
+		Evaluate( entry.inputs );
+		Backpropagate( entry.expected );
+		// check all outputs from neural network against desired values
+		bool resultCorrect = true;
+		for( int j = 0; j < NUMOUTPUT; j++ )
+		{
+			if (clampedOutputs[j] != entry.expected[j]) resultCorrect = false;
+			const float delta = outputNeurons[j] - entry.expected[j];
+			MSE += delta * delta;
+		}
+		if (!resultCorrect) incorrectEntries++;
+	}
+	// update training accuracy and MSE
+	trainingSetAccuracy = 100.0f - (incorrectEntries / set.size * 100.0f);
+	trainingSetMSE = MSE / (NUMOUTPUT * set.size);
+}
+
+void Network::Backpropagate( const int* expectedOutputs )
+{
+	// modify deltas between hidden and output layers
+	for( int i = 0; i < NUMOUTPUT; i++ )
+	{
+		// get error gradient for every output node
+		errorGradientsOutput[i] = GetOutputErrorGradient( (float)expectedOutputs[i], outputNeurons[i] );
+		// for all nodes in hidden layer and bias neuron
+		for( int j = 0; j <= NUMHIDDEN; j++ )
+		{
+			const int weightIdx = GetHiddenOutputWeightIndex( j, i );
+			// calculate change in weight
+			deltaHiddenOutput[weightIdx] = LEARNINGRATE * hiddenNeurons[j] * errorGradientsOutput[i] + MOMENTUM * deltaHiddenOutput[weightIdx];
+		}
+	}
+	// modify deltas between input and hidden layers
+	for( int i = 0; i <= NUMHIDDEN; i++ )
+	{
+		// get error gradient for every hidden node
+		errorGradientsHidden[i] = GetHiddenErrorGradient( i );
+		// for all nodes in input layer and bias neuron
+		for( int j = 0; j <= INPUTSIZE; j++ )
+		{
+			const int weightIdx = GetInputHiddenWeightIndex( j, i );
+			// calculate change in weight 
+			deltaInputHidden[weightIdx] = LEARNINGRATE * inputNeurons[j] * errorGradientsHidden[i] + MOMENTUM * deltaInputHidden[weightIdx];
+		}
+	}
+	// update the weights
+	UpdateWeights();
+}
+
+const int* Network::Evaluate( const float* input )
+{
+	// set input values
+	memcpy( inputNeurons, input, INPUTSIZE * sizeof( float ) );
+	// update hidden neurons
+	for( int i = 0; i < NUMHIDDEN; i++ )
+	{
+		hiddenNeurons[i] = 0;
+		// get weighted sum of pattern and bias neuron
+		for( int j = 0; j <= INPUTSIZE; j++ )
+		{
+			const int weightIdx = GetInputHiddenWeightIndex( j, i );
+			hiddenNeurons[i] += inputNeurons[j] * weightsInputHidden[weightIdx];
+		}
+		// apply activation function
+		hiddenNeurons[i] = SigmoidActivationFunction( hiddenNeurons[i] );
+	}
+	// calculate output values - include bias neuron
+	for( int i = 0; i < NUMOUTPUT; i++ )
+	{
+		outputNeurons[i] = 0;
+		// get weighted sum of pattern and bias neuron
+		for( int j = 0; j <= NUMHIDDEN; j++ )
+		{
+			const int weightIdx = GetHiddenOutputWeightIndex( j, i );
+			outputNeurons[i] += hiddenNeurons[j] * weightsHiddenOutput[weightIdx];
+		}
+		// apply activation function and clamp the result
+		outputNeurons[i] = SigmoidActivationFunction( outputNeurons[i] );
+		clampedOutputs[i] = ClampOutputValue( outputNeurons[i] );
+	}
+	return clampedOutputs;
+}
+
+void Network::UpdateWeights()
+{
+	// input -> hidden weights
+	for( int i = 0; i <= INPUTSIZE; i++ ) for( int j = 0; j <= NUMHIDDEN; j++ )
+	{
+		const int weightIdx = GetInputHiddenWeightIndex( i, j );
+		weightsInputHidden[weightIdx] += deltaInputHidden[weightIdx];
+	}
+	// hidden -> output weights
+	for( int i = 0; i <= NUMHIDDEN; i++ ) for ( int j = 0; j < NUMOUTPUT; j++ )
+	{
+		const int weightIdx = GetHiddenOutputWeightIndex( i, j );
+		weightsHiddenOutput[weightIdx] += deltaHiddenOutput[weightIdx];
+	}
+}
+
+void Network::GetSetAccuracyAndMSE( const TrainingSet& set, float& accuracy, float& MSE ) 
+{
+	accuracy = 0, MSE = 0;
+	float numIncorrectResults = 0;
+	for( int i = 0; i < set.size; i++ )
+	{
+		const TrainingEntry& entry = set.entry[i];
+		Evaluate( entry.inputs );
+		// check if the network outputs match the expected outputs
+		int correctResults = 0;
+		for( int j = 0; j < NUMOUTPUT; j++ )
+		{
+			correctResults += (clampedOutputs[j] == entry.expected[j]);
+			const float delta = outputNeurons[j] - entry.expected[j];
+			MSE += delta * delta;
+		}
+		if (correctResults != NUMOUTPUT) numIncorrectResults++;
+	}
+	accuracy = 100.0f - (numIncorrectResults / set.size * 100.0f);
+	MSE = MSE / (NUMOUTPUT * set.size);
+}
+
+} // namespace Tmpl8
