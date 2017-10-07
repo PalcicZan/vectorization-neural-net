@@ -14,10 +14,17 @@ Network::Network()
 	InitializeNetwork();
 	InitializeWeights();
 	// initialize trainer (calloc: malloc + clear to zero)
-	deltaInputHidden = (float*)calloc( (INPUTSIZE + 1) * (NUMHIDDEN + 1), sizeof( float ) );
-	deltaHiddenOutput = (float*)calloc( (NUMHIDDEN + 1) * NUMOUTPUT, sizeof( float ) );
-	errorGradientsHidden = (float*)calloc( NUMHIDDEN + 1, sizeof( float ) );
-	errorGradientsOutput = (float*)calloc( NUMOUTPUT, sizeof( float ) );
+#if SIMD > 0
+	deltaInputHidden[(INPUTSIZE + 1) * (NUMHIDDEN + 1) + 1] = {};
+	deltaHiddenOutput[SIMD_NUMHIDDEN * NUMOUTPUT] = {};
+	errorGradientsHidden[SIMD_NUMHIDDEN] = {};
+	errorGradientsOutput[SIMD_NUMOUTPUT] = {};
+#else
+	deltaInputHidden = (float*)calloc((INPUTSIZE + 1) * (NUMHIDDEN + 1), sizeof(float));
+	deltaHiddenOutput = (float*)calloc((NUMHIDDEN + 1) * NUMOUTPUT, sizeof(float));
+	errorGradientsHidden = (float*)calloc(NUMHIDDEN + 1, sizeof(float));
+	errorGradientsOutput = (float*)calloc(NUMOUTPUT, sizeof(float));
+#endif
 }
 
 void Network::InitializeNetwork()
@@ -101,6 +108,7 @@ void Network::Train( const TrainingData& trainingData )
 	printf( " %i input neurons, %i hidden neurons, %i output neurons\n", INPUTSIZE, NUMHIDDEN, NUMOUTPUT );
 	printf( "==========================================================================\n" );
 	// train network using training dataset for training and generalization dataset for testing
+	float allTime = 0.f;
 	while ((trainingSetAccuracy < TARGETACCURACY || generalizationSetAccuracy < TARGETACCURACY) && currentEpoch < MAXEPOCHS)
 	{
 		// use training set to train network
@@ -110,7 +118,10 @@ void Network::Train( const TrainingData& trainingData )
 		float epochTime = t.elapsed();
 		// get generalization set accuracy and MSE
 		GetSetAccuracyAndMSE( trainingData.generalizationSet, generalizationSetAccuracy, generalizationSetMSE );
-		printf( "Epoch: %03i - TS accuracy: %4.1f, MSE: %4.4f GS accuracy: %4.1f, in %06.1fms\n", currentEpoch, trainingSetAccuracy, trainingSetMSE, generalizationSetAccuracy, epochTime );
+		allTime += epochTime;
+		float avg = allTime / (currentEpoch + 1);
+		printf( "Epoch: %03i - TS accuracy: %4.1f, MSE: %4.4f GS accuracy: %4.1f, in %06.1fms (Avg: %06.1fms Speed-up: %.1fx)\n", 
+			   currentEpoch, trainingSetAccuracy, trainingSetMSE, generalizationSetAccuracy, epochTime , avg, REFSPEED/avg);
 		currentEpoch++;
 	}
 	// get validation set accuracy and MSE
@@ -123,14 +134,106 @@ void Network::Train( const TrainingData& trainingData )
 void Network::RunEpoch( const TrainingSet& set )
 {
 	float incorrectEntries = 0, MSE = 0;
+	// Probably not to vectorize
 	for( int i = 0; i < set.size; i++ )
 	{
 		const TrainingEntry& entry = set.entry[i];
 		// feed inputs through network and back propagate errors
+
+		// TODO: Vectorize
 		Evaluate( entry.inputs );
-		Backpropagate( entry.expected );
+		const int* expectedOutputs = entry.expected;
+		// TODO: Sync
+		// TODO: Vectorize
+		//Backpropagate( entry.expected );
+#if SIMD == BACKPROPAGATE || SIMD == ALL 
+		// modify deltas between hidden and output layers
+		for (int i = 0; i < NUMOUTPUT; i++)
+		{
+			errorGradientsOutput[i] = GetOutputErrorGradient((float)expectedOutputs[i], outputNeurons[i]);
+		}
+		memcpy(&errorGradientsOutput[NUMOUTPUT], errorGradientsOutput, NUMOUTPUT * sizeof(float));
+		/*for (int i = 0; i < NUMOUTPUT; i++)
+		{
+			errorGradientsOutput[i + NUMOUTPUT] = errorGradientsOutput[i];
+		}*/
+		// get error gradient for every output node
+		//__m128 desiredValue4 = _mm_set_ps((float)expectedOutputs[i * 4], (float)expectedOutputs[(i * 4) + 1], (float)expectedOutputs[(i * 4) + 2], (float)expectedOutputs[(i * 4) + 3])
+		//outputValue * (1.0f - outputValue) * (desiredValue - outputValue);
+		//__m128 i4 = _mm_set_ps1(i);
+		uint index = 0;
+		const __m128 learningRate = _mm_set1_ps(LEARNINGRATE);
+		const __m128 momentum = _mm_set1_ps(MOMENTUM);
+		for (int j = 0; j < (SIMD_NUMHIDDEN * NUMOUTPUT) / 4; j += 5)
+		{
+			//const int weightIdx = GetHiddenOutputWeightIndex(j, i); // int GetHiddenOutputWeightIndex(int hiddenIdx, int outputIdx) const { return hiddenIdx * NUMOUTPUT + outputIdx; }
+			//hiddenIdx * NUMOUTPUT + outputIdx;						// calculate change in weight
+			//__m128 j4 = _mm_set_ps(j, j + 1, j + 2, j + 3);
+			//j4 = _mm_fmadd_ps(j4, numOutput4, i4);
+			__m128 hd4 = _mm_set_ps1(hiddenNeurons[index]);
+			__m128 hd41 = _mm_set_ps1(hiddenNeurons[index + 1]);
+			__m128 hd42 = _mm_set_ps(hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index + 1], hiddenNeurons[index + 1]);
+			hd4 = _mm_mul_ps(learningRate, hd4);
+			deltaHiddenOutput4[j] = _mm_add_ps(_mm_mul_ps(hd4, errorGradientsOutput4[0]), _mm_mul_ps(momentum, deltaHiddenOutput4[j]));
+			deltaHiddenOutput4[j + 1] = _mm_add_ps(_mm_mul_ps(hd4, errorGradientsOutput4[1]), _mm_mul_ps(momentum, deltaHiddenOutput4[j + 1]));
+			//__m128 hd4 = _mm_set_ps(hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index]);
+			deltaHiddenOutput4[j + 2] = _mm_add_ps(_mm_mul_ps(_mm_mul_ps(learningRate, hd42), errorGradientsOutput4[2]), _mm_mul_ps(momentum, deltaHiddenOutput4[j + 2]));
+
+			//hd4 = _mm_set_ps1(hiddenNeurons[index]);
+			//__m128 hd4 = _mm_set_ps(hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index]);
+			//deltaHiddenOutput4[j + 4] = _mm_fmadd_ps(_mm_mul_ps(learningRate, hd41), errorGradientsOutput4[4], _mm_mul_ps(momentum, deltaHiddenOutput4[j + 4]));
+			hd41 = _mm_mul_ps(learningRate, hd41);
+			deltaHiddenOutput4[j + 3] = _mm_add_ps(_mm_mul_ps(hd41, errorGradientsOutput4[3]), _mm_mul_ps(momentum, deltaHiddenOutput4[j + 3]));
+			deltaHiddenOutput4[j + 4] = _mm_add_ps(_mm_mul_ps(hd41, errorGradientsOutput4[4]), _mm_mul_ps(momentum, deltaHiddenOutput4[j + 4]));
+			index =+ 2;
+		}
+		// modify deltas between input and hidden layers
+		for (int i = 0; i <= NUMHIDDEN; i++)
+		{
+			// get error gradient for every hidden node
+			errorGradientsHidden[i] = GetHiddenErrorGradient(i);
+			// for all nodes in input layer and bias neuron
+			for (int j = 0; j <= INPUTSIZE; j++)
+			{
+				const int weightIdx = GetInputHiddenWeightIndex(j, i);
+				// calculate change in weight 
+				deltaInputHidden[weightIdx] = LEARNINGRATE * inputNeurons[j] * errorGradientsHidden[i] + MOMENTUM * deltaInputHidden[weightIdx];
+			}
+		}
+#else
+		// modify deltas between hidden and output layers
+		for (int i = 0; i < NUMOUTPUT; i++)
+		{
+			// get error gradient for every output node
+			errorGradientsOutput[i] = GetOutputErrorGradient((float)expectedOutputs[i], outputNeurons[i]);
+			// for all nodes in hidden layer and bias neuron
+			for (int j = 0; j <= NUMHIDDEN; j++)
+			{
+				const int weightIdx = GetHiddenOutputWeightIndex(j, i);
+				// calculate change in weight
+				deltaHiddenOutput[weightIdx] = LEARNINGRATE * hiddenNeurons[j] * errorGradientsOutput[i] + MOMENTUM * deltaHiddenOutput[weightIdx];
+			}
+		}
+		// modify deltas between input and hidden layers
+		for (int i = 0; i <= NUMHIDDEN; i++)
+		{
+			// get error gradient for every hidden node
+			errorGradientsHidden[i] = GetHiddenErrorGradient(i);
+			// for all nodes in input layer and bias neuron
+			for (int j = 0; j <= INPUTSIZE; j++)
+			{
+				const int weightIdx = GetInputHiddenWeightIndex(j, i);
+				// calculate change in weight 
+				deltaInputHidden[weightIdx] = LEARNINGRATE * inputNeurons[j] * errorGradientsHidden[i] + MOMENTUM * deltaInputHidden[weightIdx];
+			}
+		}
+#endif
+		// update the weights
+		UpdateWeights();
+
 		// check all outputs from neural network against desired values
 		bool resultCorrect = true;
+		// TODO: I should vectorize
 		for( int j = 0; j < NUMOUTPUT; j++ )
 		{
 			if (clampedOutputs[j] != entry.expected[j]) resultCorrect = false;
@@ -144,21 +247,63 @@ void Network::RunEpoch( const TrainingSet& set )
 	trainingSetMSE = MSE / (NUMOUTPUT * set.size);
 }
 
-void Network::Backpropagate( const int* expectedOutputs )
+void Network::Backpropagate(const int* expectedOutputs)
 {
 	// modify deltas between hidden and output layers
-	for( int i = 0; i < NUMOUTPUT; i++ )
+#if SIMD == BACKPROPAGATE || SIMD == ALL
+	//inline float GetOutputErrorGradient(float desiredValue, float outputValue) const { return outputValue * (1.0f - outputValue) * (desiredValue - outputValue); }
+	for (int i = 0; i < NUMOUTPUT; i++)
+	{
+		errorGradientsOutput[i] = GetOutputErrorGradient((float)expectedOutputs[i], outputNeurons[i]);
+	}		
+
+	for (int i = 0; i < NUMOUTPUT; i++)
+	{
+		errorGradientsOutput[i+NUMOUTPUT] = errorGradientsOutput[i];
+	}
+	// get error gradient for every output node
+	//__m128 desiredValue4 = _mm_set_ps((float)expectedOutputs[i * 4], (float)expectedOutputs[(i * 4) + 1], (float)expectedOutputs[(i * 4) + 2], (float)expectedOutputs[(i * 4) + 3])
+	//outputValue * (1.0f - outputValue) * (desiredValue - outputValue);
+	//__m128 i4 = _mm_set_ps1(i);
+	uint index = 0;
+	const __m128 learningRate = _mm_set1_ps(LEARNINGRATE);
+	const __m128 momentum = _mm_set1_ps(MOMENTUM);
+	for (int j = 0; j < (SIMD_NUMHIDDEN * NUMOUTPUT) / 4; j += 5)
+	{
+		//const int weightIdx = GetHiddenOutputWeightIndex(j, i); // int GetHiddenOutputWeightIndex(int hiddenIdx, int outputIdx) const { return hiddenIdx * NUMOUTPUT + outputIdx; }
+																//hiddenIdx * NUMOUTPUT + outputIdx;						// calculate change in weight
+		//__m128 j4 = _mm_set_ps(j, j + 1, j + 2, j + 3);
+		//j4 = _mm_fmadd_ps(j4, numOutput4, i4);
+		__m128 hd4 = _mm_set_ps1(hiddenNeurons[index]);
+		__m128 hd41 = _mm_set_ps1(hiddenNeurons[index + 1]);
+		__m128 hd42 = _mm_set_ps(hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index + 1], hiddenNeurons[index + 1]);
+		deltaHiddenOutput4[j] = _mm_add_ps(_mm_mul_ps(_mm_mul_ps(learningRate, hd4),errorGradientsOutput4[0]),_mm_mul_ps(momentum, deltaHiddenOutput4[j]));
+		deltaHiddenOutput4[j + 1] = _mm_add_ps(_mm_mul_ps(_mm_mul_ps(learningRate, hd4), errorGradientsOutput4[1]), _mm_mul_ps(momentum, deltaHiddenOutput4[j + 1]));
+		//__m128 hd4 = _mm_set_ps(hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index]);
+		deltaHiddenOutput4[j+2] = _mm_add_ps(_mm_mul_ps(_mm_mul_ps(learningRate, hd42), errorGradientsOutput4[2]), _mm_mul_ps(momentum, deltaHiddenOutput4[j+2]));
+
+		//hd4 = _mm_set_ps1(hiddenNeurons[index]);
+		//__m128 hd4 = _mm_set_ps(hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index], hiddenNeurons[index]);
+		//deltaHiddenOutput4[j + 4] = _mm_fmadd_ps(_mm_mul_ps(learningRate, hd41), errorGradientsOutput4[4], _mm_mul_ps(momentum, deltaHiddenOutput4[j + 4]));
+		deltaHiddenOutput4[j+3] = _mm_add_ps(_mm_mul_ps(_mm_mul_ps(learningRate, hd41), errorGradientsOutput4[3]), _mm_mul_ps(momentum, deltaHiddenOutput4[j+3]));
+		deltaHiddenOutput4[j+4] = _mm_add_ps(_mm_mul_ps(_mm_mul_ps(learningRate, hd41), errorGradientsOutput4[4]), _mm_mul_ps(momentum, deltaHiddenOutput4[j+4]));
+		index =+ 2;
+	}
+#else
+	// modify deltas between hidden and output layers
+	for (int i = 0; i < NUMOUTPUT; i++)
 	{
 		// get error gradient for every output node
-		errorGradientsOutput[i] = GetOutputErrorGradient( (float)expectedOutputs[i], outputNeurons[i] );
+		errorGradientsOutput[i] = GetOutputErrorGradient((float)expectedOutputs[i], outputNeurons[i]);
 		// for all nodes in hidden layer and bias neuron
-		for( int j = 0; j <= NUMHIDDEN; j++ )
+		for (int j = 0; j <= NUMHIDDEN; j++)
 		{
-			const int weightIdx = GetHiddenOutputWeightIndex( j, i );
+			const int weightIdx = GetHiddenOutputWeightIndex(j, i);
 			// calculate change in weight
 			deltaHiddenOutput[weightIdx] = LEARNINGRATE * hiddenNeurons[j] * errorGradientsOutput[i] + MOMENTUM * deltaHiddenOutput[weightIdx];
 		}
 	}
+#endif
 	// modify deltas between input and hidden layers
 	for( int i = 0; i <= NUMHIDDEN; i++ )
 	{

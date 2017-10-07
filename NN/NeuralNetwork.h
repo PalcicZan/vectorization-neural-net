@@ -4,6 +4,20 @@
 // MIT license: https://opensource.org/licenses/MIT
 //-------------------------------------------------------------------------
 // A simple neural network supporting only a single hidden layer
+#define OFF 0
+#define EVALUATE 1
+#define BACKPROPAGATE 2
+#define RUN_EPOCHS 3
+#define ALL 4
+
+#define REFSPEED 4000.0
+
+#define SIMD ALL
+#if SIMD > 0
+#define SIMD_INPUTSIZE (INPUTSIZE)
+#define SIMD_NUMOUTPUT 20
+#define SIMD_NUMHIDDEN (NUMHIDDEN+2)
+#endif //(NUMOUTPUT+2)
 
 namespace Tmpl8 {
 
@@ -68,11 +82,18 @@ private:
 	int clampedOutputs[NUMOUTPUT];
 	float* weightsInputHidden;
 	float* weightsHiddenOutput;
-	// training data
-	float*   deltaInputHidden;				// delta for input hidden layer
+	// training data		
+#if SIMD > 0
+	union { float __declspec(align(16)) deltaInputHidden[(INPUTSIZE + 1) * (NUMHIDDEN + 1) + 1]; __m128 deltaInputHidden4[((INPUTSIZE + 1) * (NUMHIDDEN + 1)+1) / 4]; };
+	union { float __declspec(align(16)) deltaHiddenOutput[SIMD_NUMHIDDEN * NUMOUTPUT]; __m128 deltaHiddenOutput4[(SIMD_NUMHIDDEN * NUMOUTPUT) / 4]; };
+	union { float __declspec(align(16)) errorGradientsHidden[SIMD_NUMHIDDEN]; __m128 errorGradientsHidden4[SIMD_NUMHIDDEN / 4]; };
+	union { float __declspec(align(16)) errorGradientsOutput[SIMD_NUMOUTPUT]; __m128 errorGradientsOutput4[SIMD_NUMOUTPUT / 4]; };
+#else
+	float*	 deltaInputHidden;				// delta for input hidden layer
 	float*   deltaHiddenOutput;				// delta for hidden output layer
 	float*   errorGradientsHidden;			// error gradients for the hidden layer
 	float*   errorGradientsOutput;			// error gradients for the outputs
+#endif
 	int      currentEpoch;					// epoch counter
 	float    trainingSetAccuracy;
 	float    validationSetAccuracy;
