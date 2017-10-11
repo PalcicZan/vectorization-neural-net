@@ -23,13 +23,13 @@ inline static constexpr int getClosestDiv(int i, int div) { return ((i >> div) +
 // Free to change defines
 //-------------------------------------------------------------------------
 // Reference speed to calculate speedup
-#define REFSPEED 3800.0
+#define REFSPEED 3300.0
 
 // Default is that everything is vectorized (SSE | VECTORIZE_ALL)
 // Otherwise you had to specify all VECTORIZE_* you want to use 
 // (e.g. SIMD (SSE | VECTORIZE_BACKPROPAGATE | VECTORIZE_EVALUATE)) - To disable just add "& OFF"
 // (e.g. SIMD(AVX | VECTORIZE_ALL)
-#define SIMD (SSE | VECTORIZE_ALL)
+#define SIMD (AVX | VECTORIZE_ALL ) //& OFF
 
 // If using AVX and have AVX2, please define it - Microsoft compiler doesn't have a predefine
 #ifndef AVX2
@@ -48,6 +48,7 @@ typedef __m128i __mVeci;
 
 #define _mVec_storeu_ps _mm_storeu_ps
 
+// For storage only
 static constexpr int simdNumHidden = getClosestDiv(NUMHIDDEN + 1, 2); 
 static constexpr int simdNumOutput = getClosestDiv(NUMOUTPUT, 2);
 static constexpr int simdNumInput = getClosestDiv(INPUTSIZE + 1, 2);
@@ -123,6 +124,10 @@ inline static __mVeci _mVec_add_epi32(__mVeci a, __mVeci b) {
 
 inline static __mVec _mVec_setr_ps(float a, float b, float c, float d, float e, float f, float g, float h) { return _mm256_setr_ps(a, b, c, d, e, f, g, h); };
 inline static __mVeci _mVec_setr_epi32(int a, int b, int c, int d, int e, int f, int g, int h) { return _mm256_setr_epi32(a, b, c, d, e, f, g, h); };
+#else
+static constexpr int simdNumHidden = NUMHIDDEN;
+static constexpr int simdNumOutput = NUMOUTPUT;
+static constexpr int simdNumInput = INPUTSIZE;
 #endif
 
 

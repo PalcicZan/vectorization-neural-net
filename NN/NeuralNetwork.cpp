@@ -29,16 +29,16 @@ Network::Network()
 
 void Network::InitializeNetwork()
 {
-	// create storage and initialize the neurons and the outputs
-	// add bias neurons
+	// Create storage and initialize the neurons and the outputs
+	// Add bias neurons
 	const int totalNumInputs = INPUTSIZE + 1, totalNumHiddens = NUMHIDDEN + 1;
 	memset( inputNeurons, 0, INPUTSIZE * 4 );
-	memset( hiddenNeurons, 0, simdNumHidden * 4 );
+	memset( hiddenNeurons, 0, simdNumOutput * 4 );
 	memset( outputNeurons, 0, simdNumOutput * 4 );
 	memset( clampedOutputs, 0, simdNumOutput * 4 );
-	// set bias values
+	// Set bias values
 	inputNeurons[INPUTSIZE] = hiddenNeurons[NUMHIDDEN] = -1.0f;
-	// create storage and initialize and layer weights
+	// Create storage and initialize and layer weights
 #if SIMD == OFF
 	weightsInputHidden = new float[totalNumInputs * totalNumHiddens];
 	weightsHiddenOutput = new float[totalNumHiddens * NUMOUTPUT];
@@ -179,6 +179,7 @@ void Network::Backpropagate(const int* expectedOutputs)
 		//expectedOut_[i] = (float)expectedOutputs[i];
 	}
 
+	//memcpy(&errorGradientsOutput[NUMOUTPUT], &errorGradientsOutput[0], (simdNumOutput - NUMOUTPUT) * sizeof(float));
 	/*for (int i = 0; i < simdNumOutput / VEC_LENGTH; i++) 
 	{
 		__mVec outputNeuronsVec = _mm_load_ps(&outputNeurons[i * VEC_LENGTH]);
@@ -218,20 +219,28 @@ void Network::Backpropagate(const int* expectedOutputs)
 		{
 			// Calculate change in weight
 			__mVec deltaHiddenOutputVec = _mm_loadu_ps(&deltaHiddenOutput[index + (i * VEC_LENGTH)]); // Very fast because in cache following loops. Although, penalty for not alignment.
-			//__mVec errorGradientsOutputVec = _mm_load_ps(&errorGradientsOutput[i * VEC_LENGTH]);
 			deltaHiddenOutputVec = _mm_add_ps(_mm_mul_ps(hiddenNeuronsVec, errorGradientsOutputVec[i]), _mm_mul_ps(momentumVec, deltaHiddenOutputVec));
 			_mVec_storeu_ps(&deltaHiddenOutput[index + (i * VEC_LENGTH)], deltaHiddenOutputVec); // Access not aligned - use storeu
 		}
 		// Fix overlap
 		_mVec_storeu_ps(&deltaHiddenOutput[lastIndex], lastVec); // Access not aligned - use storeu
 	}
+
 #endif
 
 	union { int weightIndex_[VEC_LENGTH]; __mVeci weightIndexVec; };
 	const __mVeci numoutputVec = _mm_set1_epi32(NUMOUTPUT);
 	const __mVeci offsetVec = _mVec_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+
+	/*for (int i = 0; i <= NUMHIDDEN; i++)
+	{
+		// get error gradient for every hidden node
+		errorGradientsHidden[i] = GetHiddenErrorGradient(i);
+	}
+	float errorGradientsHiddenTest[152];
+	memcpy(&errorGradientsHiddenTest, &errorGradientsHidden, 151 * 4);*/
 	// Precalculate hidden neurons error gradient
-	for (int i = 0; i <= simdNumHidden/VEC_LENGTH; i++) // Checked
+	for (int i = 0; i < simdNumHidden/VEC_LENGTH; i++) 
 	{
 		// Get error gradient for every hidden node
 		__mVec weightedSumVec = _mm_setzero_ps();
@@ -250,7 +259,30 @@ void Network::Backpropagate(const int* expectedOutputs)
 		// Although it's improvement because we are accessing error gradients vec sequentially.
 		errorGradientsHiddenVec[i] = _mm_mul_ps(hiddenNeuronsVec[i], _mm_mul_ps(_mm_sub_ps(onesVec, hiddenNeuronsVec[i]), weightedSumVec));
 	}
-
+	/*
+	for (int k = 0; k <= NUMOUTPUT; k++)
+		if (abs(errorGradientsHidden[k] - errorGradientsHiddenTest[k]) > 0.0001f)
+			printf("!!!!!!%lf!!%lf!%d\n", errorGradientsHiddenTest[k], errorGradientsHidden[k],k);*/
+	/************************ TEST ***********************************/
+	//float deltaInputHiddenTest[118536];
+	//memcpy(&deltaInputHiddenTest, &deltaInputHidden, 118536 * 4);
+	//// modify deltas between input and hidden layers
+	//for (int i = 0; i <= NUMHIDDEN; i++)
+	//{
+	//	// get error gradient for every hidden node
+	//	errorGradientsHidden[i] = GetHiddenErrorGradient(i);
+	//	// for all nodes in input layer and bias neuron
+	//	for (int j = 0; j <= INPUTSIZE; j++)
+	//	{
+	//		const int weightIdx = GetInputHiddenWeightIndex(j, i);
+	//		// calculate change in weight 
+	//		deltaInputHidden[weightIdx] = LEARNINGRATE * inputNeurons[j] * errorGradientsHidden[i] + MOMENTUM * deltaInputHidden[weightIdx];
+	//	}
+	//}
+	//float deltaInputHiddenTrue[118536];
+	//memcpy(&deltaInputHiddenTrue, &deltaInputHidden, 118536 * 4); // Get true results
+	//memcpy(&deltaInputHidden, &deltaInputHiddenTest, 118536 * 4); // Reset it
+	// Switched 
 	for (int j = 0; j <= INPUTSIZE; j++)
 	{
 		const int index = j * (NUMHIDDEN + 1);
@@ -261,6 +293,9 @@ void Network::Backpropagate(const int* expectedOutputs)
 		for (int i = 0; i < (simdNumHidden / VEC_LENGTH); i++)
 		{
 			__mVec deltaInputHiddenVec = _mm_loadu_ps(&deltaInputHidden[index + i * VEC_LENGTH]); // Very fast because in cache next loops. -> penalty for not alignment
+			// Because we have latency of 1 (wow really good Intel) cycle it will calculate _mm_mul_ps(inputNeuronsVec,
+			// errorGradientsHiddenVec[i] first then use deltaInputHiddenVec and get a final result
+			// It will be efficient enough.
 			// Calculate change in weight 
 			deltaInputHiddenVec = _mm_add_ps(_mm_mul_ps(inputNeuronsVec, errorGradientsHiddenVec[i]), _mm_mul_ps(momentumVec, deltaInputHiddenVec));
 			_mVec_storeu_ps(&deltaInputHidden[index + i * VEC_LENGTH], deltaInputHiddenVec); // Access not aligned - use store
@@ -268,6 +303,12 @@ void Network::Backpropagate(const int* expectedOutputs)
 		// Fix overlap
 		_mVec_storeu_ps(&deltaInputHidden[lastIndex], lastVector);
 	}
+
+	//for (int k = 0; k <= (INPUTSIZE * NUMHIDDEN); k++)
+	//	if (abs(deltaInputHidden[k] - deltaInputHiddenTrue[k]) > 0.000001f)
+	//		printf("!!!!!!%lf!!%lf!%d\n", deltaInputHidden[k], errorGradientsHidden[k], k);
+
+	//memcpy(&deltaInputHidden, &deltaInputHiddenTrue, 118536 * 4);
 #else
 	// modify deltas between hidden and output layers
 	for (int i = 0; i < NUMOUTPUT; i++)
@@ -307,7 +348,28 @@ const int* Network::Evaluate( const float* input )
 
 #if SIMD & VECTORIZE_EVALUATE
 	__mVec onesVec = _mm_set_ps1(1.0f);
-	union { float hn_[VEC_LENGTH]; __mVec hiddenNeuronsVec; };
+	__mVec minusOnesVec = _mm_set_ps1(-1.0f);
+	// update hidden neurons
+	/*printf("%lf\n", hiddenNeurons[150]);
+	for (int i = 0; i < NUMHIDDEN; i++)
+	{
+		hiddenNeurons[i] = 0;
+		// get weighted sum of pattern and bias neuron
+		for (int j = 0; j <= INPUTSIZE; j++)
+		{
+			const int weightIdx = GetInputHiddenWeightIndex(j, i);
+			hiddenNeurons[i] += inputNeurons[j] * weightsInputHidden[weightIdx];
+		}
+		// apply activation function
+		hiddenNeurons[i] = SigmoidActivationFunction(hiddenNeurons[i]);
+	}
+	__declspec(align(ALIGNMENT)) float hiddenNeuronsTest[152];
+	memcpy(&hiddenNeuronsTest, &hiddenNeurons, 150*4);
+	memset(&hiddenNeurons, 4 , 150 * 4);
+		printf("%lf\n", hiddenNeurons[150]);*/
+	union { __declspec(align(ALIGNMENT)) float hn_[VEC_LENGTH]; __mVec hiddenNeuronsVec; };
+
+	float hiddenNeuronFix = hiddenNeurons[NUMHIDDEN]; // To fix overwritten hidden neuron
 	for (int i = 0; i < simdNumHidden / VEC_LENGTH; i++)
 	{
 		hiddenNeuronsVec = _mm_setzero_ps();
@@ -320,17 +382,44 @@ const int* Network::Evaluate( const float* input )
 			__mVec weightsInputHiddenVec = _mm_loadu_ps(&weightsInputHidden[weightIdx]); // Cache miss - fallowed by hits
 			hiddenNeuronsVec = _mm_add_ps(hiddenNeuronsVec, _mm_mul_ps(inputNeuronsVec, weightsInputHiddenVec));
 		}
-		hiddenNeuronsVec = _mm_mul_ps(_mm_set_ps1(-1.0f), hiddenNeuronsVec);
-		// Sadly no support/intrinsics to vectorize expf by Intel - could use 
+		hiddenNeuronsVec = _mm_mul_ps(minusOnesVec, hiddenNeuronsVec);
+		// Sadly no support/intrinsics to vectorize exp by SSE or AVX - could use extern libs 
 		hiddenNeuronsVec = _mm_div_ps(onesVec, _mm_add_ps(onesVec, _mVec_setr_ps(expf(hn_[0]), expf(hn_[1]), expf(hn_[2]), expf(hn_[3]),
 																				expf(hn_[4]), expf(hn_[5]), expf(hn_[6]), expf(hn_[7]))));
 		_mm_store_ps(&hiddenNeurons[index], hiddenNeuronsVec); // Store it - it's aligned
-	}
 
+	}
+	hiddenNeurons[NUMHIDDEN] = hiddenNeuronFix; // To fix overwritten hidden neuron
+	//printf("%lf\n", hiddenNeurons[150]);
+	// Check
+	/*for (int k = 0; k < 150; k++)
+		if (hiddenNeurons[k] != hiddenNeuronsTest[k])
+			printf("???????????!!!!!!%lf!!%lf!%d\n", hiddenNeurons[k], hiddenNeuronsTest[k],k);
+	// calculate output values - include bias neuron 
+	for (int i = 0; i < NUMOUTPUT; i++)
+	{
+		outputNeurons[i] = 0;
+		// get weighted sum of pattern and bias neuron
+		for (int j = 0; j <= NUMHIDDEN; j++)
+		{
+			const int weightIdx = GetHiddenOutputWeightIndex(j, i);
+			outputNeurons[i] += hiddenNeurons[j] * weightsHiddenOutput[weightIdx];
+		}
+		// apply activation function and clamp the result
+		outputNeurons[i] = SigmoidActivationFunction(outputNeurons[i]);
+		clampedOutputs[i] = ClampOutputValue(outputNeurons[i]);
+	}*/
+	/*__declspec(align(ALIGNMENT)) float outputNeuronsTest[16];
+	__declspec(align(ALIGNMENT)) int clampedOutputsTest[16];
+	memcpy(&clampedOutputsTest, &clampedOutputs, 16 * 4);
+	memcpy(&outputNeuronsTest, &outputNeurons, 16 * 4);
+
+	memset(&clampedOutputs, 4, 16 * 4);
+	memset(&outputNeuronsTest, 4, 16 * 4);*/
 	union { float on_[VEC_LENGTH]; __mVec outputNeuronsVec; };
 	// Because we are vectorizing NUMOUTPUT consequently using AVX brings at most 1.5 speed up. 
 	// Calculate output values - include bias neuron 
-	for (int i = 0; i < ((NUMOUTPUT + VEC_LENGTH) / VEC_LENGTH); i++) //(NUMOUTPUT+2) / VEC_LENGTH
+	for (int i = 0; i < simdNumOutput/VEC_LENGTH; i++)
 	{
 		outputNeuronsVec = _mm_setzero_ps(); 
 		const int index = i * VEC_LENGTH;
@@ -338,8 +427,6 @@ const int* Network::Evaluate( const float* input )
 		for (int j = 0; j <= NUMHIDDEN; j++)
 		{
 			int weightIdx = j * NUMOUTPUT + index;
-			//__mVec weightsHiddenOutputVec = _mVec_setr_ps(weightsHiddenOutput[weightIdx], weightsHiddenOutput[weightIdx + 1], weightsHiddenOutput[weightIdx + 2], weightsHiddenOutput[weightIdx + 3],
-			//											weightsHiddenOutput[weightIdx + 4], weightsHiddenOutput[weightIdx + 5], weightsHiddenOutput[weightIdx + 6], weightsHiddenOutput[weightIdx + 7]); // AVX else ignored!
 			__mVec weightsHiddenOutputVec = _mm_loadu_ps(&weightsHiddenOutput[weightIdx]);
 			__mVec hiddenNeuronsVec = _mm_set_ps1(hiddenNeurons[j]);
 			outputNeuronsVec = _mm_add_ps(outputNeuronsVec, _mm_mul_ps(hiddenNeuronsVec, weightsHiddenOutputVec));
@@ -351,15 +438,19 @@ const int* Network::Evaluate( const float* input )
 		outputNeuronsVec = _mm_div_ps(onesVec, _mm_add_ps(onesVec, _mVec_setr_ps(expf(on_[0]), expf(on_[1]), expf(on_[2]), expf(on_[3]),
 																				expf(on_[4]), expf(on_[5]), expf(on_[6]), expf(on_[7]))));
 		// Apply activation function and clamp the result
-		clampedOutputsVec = _mm_andnot_ps(_mm_cmp_ps(outputNeuronsVec, _mm_set_ps1(0.1f), _CMP_LE_OQ), clampedOutputsVec); // Get vec of -1 and 0 // _mm_cmp_ps works only with SSE 4.1 and higher
+		clampedOutputsVec = _mm_andnot_ps(_mm_cmp_ps(outputNeuronsVec, _mm_set_ps1(0.1f), _CMP_LT_OQ), clampedOutputsVec); // Get vec of -1 and 0 // _mm_cmp_ps works only with SSE 4.1 and higher
 		clampedOutputsVec = _mm_add_ps(clampedOutputsVec, _mm_and_ps(_mm_set_ps1(2.0f), _mm_cmp_ps(outputNeuronsVec, _mm_set_ps1(0.9f), _CMP_GT_OQ))); // Add +2 to greater than 0.9
 
 		_mm_store_ps(&outputNeurons[index], outputNeuronsVec); // It is aligned - store sufficient
-		_mm_store_si128((__mVeci *)&clampedOutputs[index], _mm_cvttps_epi32(clampedOutputsVec)); // It is aligned - store sufficient
+		_mm_store_si128((__mVeci *)&clampedOutputs[index], _mm_cvtps_epi32(clampedOutputsVec)); // It is aligned but conversion is costly
+
 	}
-#else	
+	/*for (int k = 0; k < NUMOUTPUT; k++)
+		if ((clampedOutputs[k] != clampedOutputsTest[k]) || (outputNeuronsTest[k] != outputNeuronsTest[k]))
+			printf("!!!!!!%d!!%lf!\n", clampedOutputs[k], clampedOutputsTest[k]);*/
+#else
 	// update hidden neurons
-	for(int i = 0; i < NUMHIDDEN; i++)
+	for (int i = 0; i < NUMHIDDEN; i++)
 	{
 		hiddenNeurons[i] = 0;
 		// get weighted sum of pattern and bias neuron
@@ -367,13 +458,11 @@ const int* Network::Evaluate( const float* input )
 		{
 			const int weightIdx = GetInputHiddenWeightIndex(j, i);
 			hiddenNeurons[i] += inputNeurons[j] * weightsInputHidden[weightIdx];
-
 		}
 		// apply activation function
 		hiddenNeurons[i] = SigmoidActivationFunction(hiddenNeurons[i]);
 	}
-
-	// calculate output values - include bias neuron 
+	// calculate output values - include bias neuron
 	for (int i = 0; i < NUMOUTPUT; i++)
 	{
 		outputNeurons[i] = 0;
@@ -405,17 +494,16 @@ void Network::UpdateWeights()
 		weightsHiddenOutputVec[i] = _mm_add_ps(weightsHiddenOutputVec[i], deltaHiddenOutputVec[i]);
 	}
 #else
-	// input -> hidden weights
+	// Input -> hidden weights
 	for (int i = 0; i <= INPUTSIZE; i++) for (int j = 0; j <= NUMHIDDEN; j++)
 	{
 		const int weightIdx = GetInputHiddenWeightIndex(i, j);
 		weightsInputHidden[weightIdx] += deltaInputHidden[weightIdx];
 	}
-
-	// hidden -> output weights
-	for( int i = 0; i <= NUMHIDDEN; i++ ) for ( int j = 0; j < NUMOUTPUT; j++ )
+	// Hidden -> output weights
+	for (int i = 0; i <= NUMHIDDEN; i++) for (int j = 0; j < NUMOUTPUT; j++)
 	{
-		const int weightIdx = GetHiddenOutputWeightIndex( i, j );
+		const int weightIdx = GetHiddenOutputWeightIndex(i, j);
 		weightsHiddenOutput[weightIdx] += deltaHiddenOutput[weightIdx];
 	}
 #endif
