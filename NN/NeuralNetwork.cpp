@@ -164,27 +164,6 @@ void Network::RunEpoch(const TrainingSet& set)
 
 void Network::Backpropagate(const int* expectedOutputs)
 {
-#ifdef VERIFY
-	float deltaHiddenOutputUnmodified[simdNumHidden*NUMOUTPUT];
-	memcpy(&deltaHiddenOutputUnmodified, &deltaHiddenOutput, simdNumHidden*NUMOUTPUT * 4);
-	// modify deltas between hidden and output layers
-	for (int i = 0; i < NUMOUTPUT; i++)
-	{
-		// get error gradient for every output node
-		errorGradientsOutput[i] = GetOutputErrorGradient((float)expectedOutputs[i], outputNeurons[i]);
-		// for all nodes in hidden layer and bias neuron
-		for (int j = 0; j <= NUMHIDDEN; j++)
-		{
-			const int weightIdx = GetHiddenOutputWeightIndex(j, i);
-			// calculate change in weight
-			deltaHiddenOutput[weightIdx] = LEARNINGRATE * hiddenNeurons[j] * errorGradientsOutput[i] + MOMENTUM * deltaHiddenOutput[weightIdx];
-		}
-	}
-	float deltaHiddenOutputTrue[simdNumHidden*NUMOUTPUT];
-	memcpy(&deltaHiddenOutputTrue, &deltaHiddenOutput, simdNumHidden*NUMOUTPUT * 4);
-	memcpy(&deltaHiddenOutput, &deltaHiddenOutputUnmodified, simdNumHidden*NUMOUTPUT * 4);
-
-#endif
 #if SIMD & VECTORIZE_BACKPROPAGATE
 	// Error gradient output calculation with SIMD maybe not worth it - it's a minor performance improvement if at all
 	for (int i = 0; i < NUMOUTPUT; i++) // Too few to bother
@@ -221,38 +200,6 @@ void Network::Backpropagate(const int* expectedOutputs)
 		_mVec_storeu_ps(&deltaHiddenOutput[lastIndex], lastVec);
 	}
 
-#ifdef VERIFY
-	for (int i = 0; i < 1510; i++)
-		if (fabs(deltaHiddenOutput[i] - deltaHiddenOutputTrue[i]) > 0.00001)
-			printf("1. !!!! ERROR !!!! (%d: %lf - %lf) %lf\n", i, deltaHiddenOutput[i], deltaHiddenOutputTrue[i], fabs(deltaHiddenOutput[i] - deltaHiddenOutputTrue[i]));
-
-
-	float errorGradientsHiddenUnmodified[simdNumHidden];
-	memcpy(&errorGradientsHiddenUnmodified, &errorGradientsHidden, simdNumHidden * 4);
-	float deltaInputHiddenUnmodified[simdNumWeightsIH];
-	memcpy(&deltaInputHiddenUnmodified, &deltaInputHidden, simdNumWeightsIH * 4);
-	// modify deltas between input and hidden layers
-	for (int i = 0; i <= NUMHIDDEN; i++)
-	{
-		// get error gradient for every hidden node
-		errorGradientsHidden[i] = GetHiddenErrorGradient(i);
-		// for all nodes in input layer and bias neuron
-		for (int j = 0; j <= INPUTSIZE; j++)
-		{
-			const int weightIdx = GetInputHiddenWeightIndex(j, i);
-			// calculate change in weight 
-			deltaInputHidden[weightIdx] = LEARNINGRATE * inputNeurons[j] * errorGradientsHidden[i] + MOMENTUM * deltaInputHidden[weightIdx];
-		}
-	}
-
-	float errorGradientsHiddenTrue[simdNumHidden];
-	memcpy(&errorGradientsHiddenTrue, &errorGradientsHidden, simdNumHidden * 4);
-	float deltaInputHiddenTrue[simdNumWeightsIH];
-	memcpy(&deltaInputHiddenTrue, &deltaInputHidden, simdNumWeightsIH * 4);
-
-	memcpy(&errorGradientsHidden, &errorGradientsHiddenUnmodified, simdNumHidden * 4);
-	memcpy(&deltaInputHidden, &deltaInputHiddenUnmodified, simdNumWeightsIH * 4);
-#endif
 	union { int weightIndex_[VEC_LENGTH]; __mVeci weightIndexVec; };
 	const __mVeci numoutputVec = _mm_set1_epi32(NUMOUTPUT);
 	const __mVeci offsetVec = _mVec_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
@@ -283,44 +230,21 @@ void Network::Backpropagate(const int* expectedOutputs)
 	{
 		const int index = j * (NUMHIDDEN + 1);
 		__mVec inputNeuronsVec = _mm_mul_ps(learningRateVec, _mm_set_ps1(inputNeurons[j]));
-		const int lastIndex = index + (NUMHIDDEN + 1);	
-		// In case of 151 nodes one float would suffice, with vector is general solution, although slower
+		const int lastIndex = index + (NUMHIDDEN + 1);
+		// In case of 151 hidden nodes one float would suffice, with vector is more general solution, although slower
 		__mVec lastVector = _mm_loadu_ps(&deltaInputHidden[lastIndex]);
-		//memcpy(&deltaInputHidden_, &deltaInputHidden[index], simdNumHidden*4); // It is strange but work most efficiently 
 		// Modify deltas between input and hidden layers
 		for (int i = 0; i < (simdNumHidden / VEC_LENGTH); i++)
 		{
 			// We have 3 channels to so maximum three SIMD operations per cycle... Bottleneck of out application. ~ 2 CPI
-			__mVec deltaInputHiddenLocalVec = _mm_mul_ps(momentumVec, _mm_loadu_ps(&deltaInputHidden[index + i * VEC_LENGTH])); // Fast because in cache next loops. -> penalty for not alignment
-			// Because we have latency of 1 (wow really good Intel) cycle it will calculate _mm_mul_ps(inputNeuronsVec,
-			// errorGradientsHiddenVec[i] first then use deltaInputHiddenVec and get a final result
-			// It will be efficient enough.
-			// Calculate change in weight 
-			//inputNeuronsVec = _mm_mul_ps(inputNeuronsVec, errorGradientsHiddenVec[i]);
-			//deltaInputHidden_[i*VEC_LENGTH] *= MOMENTUM;
-			//deltaInputHidden_[i*VEC_LENGTH+1] *= MOMENTUM;
-			//__mVec temp = _mm_mul_ps(inputNeuronsVec, errorGradientsHiddenVec[i]);
-			//deltaInputHidden_[i*VEC_LENGTH+2] *= MOMENTUM;
-			//deltaInputHidden_[i*VEC_LENGTH+3] *= MOMENTUM;
-			//_mm_mul_ps(momentumVec,
+			// Load fast because in cache next loops. -> penalty for not alignment
+			__mVec deltaInputHiddenLocalVec = _mm_mul_ps(momentumVec, _mm_loadu_ps(&deltaInputHidden[index + i * VEC_LENGTH])); 
 			__mVec result = _mm_add_ps(_mm_mul_ps(inputNeuronsVec, errorGradientsHiddenVec[i]), deltaInputHiddenLocalVec);
 			_mVec_storeu_ps(&deltaInputHidden[index + i * VEC_LENGTH], result); // Access not aligned - use store
 		}
 		// Fix overlap
 		_mVec_storeu_ps(&deltaInputHidden[lastIndex], lastVector);
 	}
-	
-#ifdef VERIFY
-
-	for (int i = 0; i < 151; i++)
-		if (fabs(errorGradientsHidden[i] - errorGradientsHiddenTrue[i]) > 0.00001)
-			printf("2. !!!! ERROR !!!! (%d: %lf - %lf)\n", i, errorGradientsHidden[i], errorGradientsHiddenTrue[i]);
-	for (int i = 0; i < simdNumWeightsIH; i++)
-		if (fabs(deltaInputHidden[i] - deltaInputHiddenTrue[i]) > 0.00001)
-			printf("3. !!!! ERROR !!!! (%d: %lf - %lf) %lf\n", i, deltaInputHidden[i], deltaInputHiddenTrue[i], fabs(deltaInputHidden[i] - deltaInputHiddenTrue[i]));
-#endif
-
-
 #else
 	// modify deltas between hidden and output layers
 	for (int i = 0; i < NUMOUTPUT; i++)
@@ -357,51 +281,6 @@ const int* Network::Evaluate(const float* input)
 {
 	// Set input values
 	memcpy(inputNeurons, input, INPUTSIZE * sizeof(float));
-#ifdef VERIFY
-
-	float *hiddenNeuronsUnmodified = new float[simdNumHidden];
-	float *hiddenNeuronsTrue = new float[simdNumHidden];
-	float *outputNeuronsTrue = new float[simdNumOutput];
-	float *outputNeuronsUnmodified = new float[simdNumOutput];
-	int *clampedOutputsTrue = new int[simdNumOutput];
-	memcpy(hiddenNeuronsUnmodified, hiddenNeurons, simdNumHidden * 4);
-	memcpy(outputNeuronsUnmodified, outputNeurons, simdNumOutput * 4);
-	// update hidden neurons
-	for (int i = 0; i < NUMHIDDEN; i++)
-	{
-		hiddenNeurons[i] = 0;
-		// get weighted sum of pattern and bias neuron
-		for (int j = 0; j <= INPUTSIZE; j++)
-		{
-			const int weightIdx = GetInputHiddenWeightIndex(j, i);
-			hiddenNeurons[i] += inputNeurons[j] * weightsInputHidden[weightIdx];
-	}
-		// apply activation function
-		hiddenNeurons[i] = SigmoidActivationFunction(hiddenNeurons[i]);
-}
-
-	// calculate output values - include bias neuron
-	for (int i = 0; i < NUMOUTPUT; i++)
-	{
-		outputNeurons[i] = 0;
-		// get weighted sum of pattern and bias neuron
-		for (int j = 0; j <= NUMHIDDEN; j++)
-		{
-			const int weightIdx = GetHiddenOutputWeightIndex(j, i);
-			outputNeurons[i] += hiddenNeurons[j] * weightsHiddenOutput[weightIdx];
-		}
-		// apply activation function and clamp the result
-		outputNeurons[i] = SigmoidActivationFunction(outputNeurons[i]);
-		clampedOutputs[i] = ClampOutputValue(outputNeurons[i]);
-	}
-
-	memcpy(hiddenNeuronsTrue, hiddenNeurons, simdNumHidden * 4);
-	memcpy(hiddenNeurons, hiddenNeuronsUnmodified, simdNumHidden * 4);
-	memcpy(outputNeuronsTrue, outputNeurons, simdNumOutput * 4);
-	memcpy(outputNeurons, outputNeuronsUnmodified, simdNumOutput * 4);
-	memcpy(clampedOutputsTrue, clampedOutputs, simdNumOutput * 4);
-#endif
-
 #if SIMD & VECTORIZE_EVALUATE
 	__mVec onesVec = _mm_set_ps1(1.0f);
 	__mVec minusOnesVec = _mm_set_ps1(-1.0f);
@@ -458,21 +337,7 @@ const int* Network::Evaluate(const float* input)
 		_mm_store_si128((__mVeci *)&clampedOutputs[index], _mm_cvtps_epi32(clampedOutputsVec)); // It is aligned but conversion is costly
 
 	}
-#ifdef VERIFY
-	for (int i = 0; i < NUMHIDDEN + 1; i++)
-		if (fabs(hiddenNeuronsTrue[i] - hiddenNeurons[i]) > 0.00001)
-			printf("1. !!!! ERROR EVAL !!!! (%d: %lf - %lf)\n", i, hiddenNeuronsTrue[i], hiddenNeurons[i]);
-	for (int i = 0; i < NUMOUTPUT; i++)
-		if (fabs(outputNeuronsTrue[i] - outputNeurons[i]) > 0.00001)
-			printf("2. !!!! ERROR EVAL !!!! (%d: %lf - %lf) %lf\n", i, outputNeuronsTrue[i], outputNeurons[i], fabs(outputNeuronsTrue[i] - outputNeurons[i]));
-	for (int i = 0; i < NUMOUTPUT; i++)
-		if (clampedOutputsTrue[i] != clampedOutputs[i])
-			printf("3. !!!! ERROR EVAL !!!! (%d: %d - %d)\n", i, clampedOutputs[i], clampedOutputsTrue[i]);
 
-	//memcpy(hiddenNeurons, hiddenNeuronsTrue, simdNumHidden * 4);
-	//memcpy(outputNeurons, outputNeuronsTrue, simdNumOutput * 4);
-	//memcpy(clampedOutputs, clampedOutputsTrue, simdNumOutput * 4);
-#endif
 #else
 	// update hidden neurons
 	for (int i = 0; i < NUMHIDDEN; i++)
@@ -507,31 +372,6 @@ const int* Network::Evaluate(const float* input)
 
 void Network::UpdateWeights()
 {
-#ifdef VERIFY
-	float *weightsInputHiddenTrue = new float[simdNumWeightsIH];
-	float *weightsHiddenOutputTrue = new float[simdNumHidden * NUMOUTPUT];
-	float *weightsInputHiddenUnmodified = new float[simdNumWeightsIH];
-	float *weightsHiddenOutputUnmodified = new float[(simdNumHidden * NUMOUTPUT)];
-
-	memcpy(weightsInputHiddenUnmodified, weightsInputHidden, simdNumWeightsIH * sizeof(float));
-	memcpy(weightsHiddenOutputUnmodified, weightsHiddenOutput, (simdNumHidden * NUMOUTPUT) * sizeof(float));
-	// Input -> hidden weights
-	for (int i = 0; i <= INPUTSIZE; i++) for (int j = 0; j <= NUMHIDDEN; j++)
-	{
-		const int weightIdx = GetInputHiddenWeightIndex(i, j);
-		weightsInputHidden[weightIdx] += deltaInputHidden[weightIdx];
-	}
-	// Hidden -> output weights
-	for (int i = 0; i <= NUMHIDDEN; i++) for (int j = 0; j < NUMOUTPUT; j++)
-	{
-		const int weightIdx = GetHiddenOutputWeightIndex(i, j);
-		weightsHiddenOutput[weightIdx] += deltaHiddenOutput[weightIdx];
-	}
-	memcpy(weightsInputHiddenTrue, weightsInputHidden, simdNumWeightsIH * 4);
-	memcpy(weightsHiddenOutputTrue, weightsHiddenOutput, (simdNumHidden * NUMOUTPUT) * 4);
-	memcpy(weightsInputHidden, weightsInputHiddenUnmodified, simdNumWeightsIH * 4);
-	memcpy(weightsHiddenOutput, weightsHiddenOutputUnmodified, (simdNumHidden * NUMOUTPUT) * 4);
-#endif
 #if SIMD & VECTORIZE_UPDATE_WEIGHTS
 	// Input -> hidden weights
 	for (int i = 0; i < simdNumWeightsIH / VEC_LENGTH; i++)
@@ -558,24 +398,6 @@ void Network::UpdateWeights()
 	}
 #endif
 
-#ifdef VERIFY
-
-	// Input -> hidden weights
-	for (int i = 0; i < simdNumWeightsIH; i++)
-		if (fabs(weightsInputHidden[i] - weightsInputHiddenTrue[i]) > 0.00001)
-			printf("1. !!!! ERROR !!!! (%d: %lf - %lf)\n", i, weightsInputHidden[i], weightsInputHiddenTrue[i]);
-	// Hidden -> output weights
-	for (int i = 0; i < (simdNumHidden * NUMOUTPUT); i++)
-		if (fabs(weightsHiddenOutput[i] - weightsHiddenOutputTrue[i]) > 0.00001)
-			printf("2. !!!! ERROR !!!! (%d: %lf - %lf)\n", i, weightsHiddenOutput[i], weightsHiddenOutputTrue[i]);
-
-	//memcpy(weightsInputHidden, weightsInputHiddenTrue, simdNumWeightsIH * 4);
-	//memcpy(weightsHiddenOutput, weightsHiddenOutputTrue, (simdNumHidden * NUMOUTPUT) * 4);
-	delete[] weightsInputHiddenTrue;
-	delete[] weightsHiddenOutputTrue;
-	delete[] weightsInputHiddenUnmodified;
-	delete[] weightsHiddenOutputUnmodified;
-#endif
 }
 
 void Network::GetSetAccuracyAndMSE(const TrainingSet& set, float& accuracy, float& MSE)
@@ -598,6 +420,6 @@ void Network::GetSetAccuracyAndMSE(const TrainingSet& set, float& accuracy, floa
 	}
 	accuracy = 100.0f - (numIncorrectResults / set.size * 100.0f);
 	MSE = MSE / (NUMOUTPUT * set.size);
-	}
+}
 
 } // namespace Tmpl8

@@ -87,7 +87,6 @@ static constexpr int simdNumWeightsIH = getClosestDiv((INPUTSIZE + 1) * (NUMHIDD
 // Integer operators
 #define _mm_set_epi32 _mm256_set_epi32
 #define _mm_set1_epi32 _mm256_set1_epi32
-//#define _mm_add_epi32 _mm256_add_epi32
 #define _mm_store_si128 _mm256_store_si256
 #define _mm_storeu_si128 _mm256_storeu_si256
 #define _mm_cvtps_epi32 _mm256_cvtps_epi32
@@ -214,7 +213,7 @@ private:
 	union { __declspec(align(ALIGNMENT)) float weightsHiddenOutput[simdNumHidden * NUMOUTPUT]; __mVec weightsHiddenOutputVec[(simdNumHidden * NUMOUTPUT) / VEC_LENGTH]; };
 	// training data	
 	union { __declspec(align(ALIGNMENT)) float deltaInputHidden[simdNumWeightsIH]; __mVec deltaInputHiddenVec[simdNumWeightsIH / VEC_LENGTH]; };
-	union { __declspec(align(ALIGNMENT)) float deltaHiddenOutput[simdNumHidden * NUMOUTPUT + 10]; __mVec deltaHiddenOutputVec[(simdNumHidden * NUMOUTPUT + 10) / VEC_LENGTH]; };
+	union { __declspec(align(ALIGNMENT)) float deltaHiddenOutput[simdNumHidden * NUMOUTPUT]; __mVec deltaHiddenOutputVec[(simdNumHidden * NUMOUTPUT) / VEC_LENGTH]; };
 	union { __declspec(align(ALIGNMENT)) float errorGradientsHidden[simdNumHidden]; __mVec errorGradientsHiddenVec[simdNumHidden / VEC_LENGTH]; };
 #ifdef SIMD_OPTIMIZED_SECIAL_CASE_BACKPROP
 	union { __declspec(align(ALIGNMENT)) float errorGradientsOutput[20]; __mVec errorGradientsOutputVec[20 / VEC_LENGTH]; };
