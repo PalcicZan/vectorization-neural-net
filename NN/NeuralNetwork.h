@@ -23,22 +23,20 @@ inline static constexpr int getClosestDiv(int i, int div) { return ((i >> div) +
 // Free to change defines
 //-------------------------------------------------------------------------
 // Reference speed to calculate speedup
-#define REFSPEED 4000
-#define VERIFY
+#define REFSPEED 3700
+//#define VERIFY
+
 // It is OPTIMIZED FOR SSE but also works with AVX.
 // Default is that everything is vectorized (SSE | VECTORIZE_ALL)
 // Otherwise you had to specify all VECTORIZE_* you want to use 
 // (e.g. SIMD (SSE | VECTORIZE_BACKPROPAGATE | VECTORIZE_EVALUATE)) - To disable just add "& OFF"
 // (e.g. SIMD(AVX | VECTORIZE_ALL)
-#define SIMD (SSE | VECTORIZE_ALL )
+#define SIMD ( SSE | VECTORIZE_ALL )
 
 // If using AVX and have AVX2, please define it - Microsoft compiler doesn't have a predefine
 #ifndef AVX2
 //#define AVX2
 #endif
-
-// Works only for current network layout and with SSE / not so beneficial
-//#define SIMD_OPTIMIZED_SECIAL_CASE_BACKPROP 
 
 #if SIMD & SSE
 #define VEC_LENGTH 4
@@ -49,7 +47,7 @@ typedef __m128i __mVeci;
 #define _mVec_storeu_ps _mm_storeu_ps
 
 // For storage only
-static constexpr int simdNumHidden = getClosestDiv(NUMHIDDEN + 1, 2); 
+static constexpr int simdNumHidden = getClosestDiv(NUMHIDDEN + 1, 2);
 static constexpr int simdNumOutput = getClosestDiv(NUMOUTPUT, 2);
 static constexpr int simdNumInput = getClosestDiv(INPUTSIZE + 1, 2);
 static constexpr int simdNumWeightsIH = getClosestDiv((INPUTSIZE + 1) * (NUMHIDDEN + 1), 2);
@@ -96,9 +94,10 @@ static constexpr int simdNumWeightsIH = getClosestDiv((INPUTSIZE + 1) * (NUMHIDD
 #define _mm_cvttps_epi32 _mm256_cvttps_epi32
 
 // While I don't have AVX 2 support ugly magic needs to be done
-inline static __mVeci _mVec_mullo_epi32(__mVeci a, __mVeci b) { 
+inline static __mVeci _mVec_mullo_epi32(__mVeci a, __mVeci b)
+{
 #if defined(AVX2) || defined(__AVX2__)
-	return _mm256_mullo_epi32(a, b); 
+	return _mm256_mullo_epi32(a, b);
 #else
 	__m128i vah = _mm256_extractf128_si256(a, 0);
 	__m128i val = _mm256_extractf128_si256(a, 1);
@@ -110,7 +109,8 @@ inline static __mVeci _mVec_mullo_epi32(__mVeci a, __mVeci b) {
 #endif
 };
 // While I don't have AVX 2 support ugly magic needs to be done
-inline static __mVeci _mVec_add_epi32(__mVeci a, __mVeci b) {
+inline static __mVeci _mVec_add_epi32(__mVeci a, __mVeci b)
+{
 #if defined(AVX2) || defined(__AVX2__)
 	return _mm256_add_epi32(a, b);
 #else
@@ -133,7 +133,8 @@ static constexpr int simdNumInput = INPUTSIZE;
 #endif
 
 
-namespace Tmpl8 {
+namespace Tmpl8
+{
 
 struct TrainingEntry
 {
@@ -153,7 +154,7 @@ struct TrainingSet
 
 struct TrainingData
 {
-	TrainingData( int t, int g, int v )
+	TrainingData(int t, int g, int v)
 	{
 		trainingSet.entry = new TrainingEntry[t];
 		trainingSet.size = t;
@@ -170,26 +171,26 @@ struct TrainingData
 class Network
 {
 	friend class NetworkTrainer;
-	inline static float SigmoidActivationFunction( float x ) { return 1.0f / (1.0f + expf( -x )); }
-	inline static int ClampOutputValue( float x ) { if ( x < 0.1f ) return 0; else if ( x > 0.9f ) return 1; else return -1; }
-	inline float GetOutputErrorGradient( float desiredValue, float outputValue ) const { return outputValue * (1.0f - outputValue) * (desiredValue - outputValue); }
-	int GetInputHiddenWeightIndex( int inputIdx, int hiddenIdx ) const { return inputIdx * (NUMHIDDEN + 1) + hiddenIdx; }
-	int GetHiddenOutputWeightIndex( int hiddenIdx, int outputIdx ) const { return hiddenIdx * NUMOUTPUT + outputIdx; }
+	inline static float SigmoidActivationFunction(float x) { return 1.0f / (1.0f + expf(-x)); }
+	inline static int ClampOutputValue(float x) { if (x < 0.1f) return 0; else if (x > 0.9f) return 1; else return -1; }
+	inline float GetOutputErrorGradient(float desiredValue, float outputValue) const { return outputValue * (1.0f - outputValue) * (desiredValue - outputValue); }
+	int GetInputHiddenWeightIndex(int inputIdx, int hiddenIdx) const { return inputIdx * (NUMHIDDEN + 1) + hiddenIdx; }
+	int GetHiddenOutputWeightIndex(int hiddenIdx, int outputIdx) const { return hiddenIdx * NUMOUTPUT + outputIdx; }
 public:
 	Network();
-	const int* Evaluate( const float* input );
-	void Train( const TrainingData& trainingData );
+	const int* Evaluate(const float* input);
+	void Train(const TrainingData& trainingData);
 	const float* GetInputHiddenWeights() const { return weightsInputHidden; }
 	const float* GetHiddenOutputWeights() const { return weightsHiddenOutput; }
-	void LoadWeights( const float* weights );
-	void SaveWeights( float* weights );
+	void LoadWeights(const float* weights);
+	void SaveWeights(float* weights);
 	void InitializeNetwork();
 	void InitializeWeights();
-	float GetHiddenErrorGradient( int hiddenIdx ) const;
-	void RunEpoch( const TrainingSet& trainingSet );
-	void Backpropagate( const int* expectedOutputs );
+	float GetHiddenErrorGradient(int hiddenIdx) const;
+	void RunEpoch(const TrainingSet& trainingSet);
+	void Backpropagate(const int* expectedOutputs);
 	void UpdateWeights();
-	void GetSetAccuracyAndMSE( const TrainingSet& trainingSet, float& accuracy, float& mse );
+	void GetSetAccuracyAndMSE(const TrainingSet& trainingSet, float& accuracy, float& mse);
 private:
 	// neural net data
 #if SIMD != OFF
@@ -209,8 +210,8 @@ public:
 private:
 #if SIMD != OFF
 	__declspec(align(16)) int clampedOutputs[simdNumOutput];
-	union {	__declspec(align(ALIGNMENT)) float weightsInputHidden[simdNumWeightsIH]; __mVec weightsInputHiddenVec[simdNumWeightsIH / VEC_LENGTH];};
-	union {	__declspec(align(ALIGNMENT)) float weightsHiddenOutput[simdNumHidden * NUMOUTPUT]; __mVec weightsHiddenOutputVec[(simdNumHidden * NUMOUTPUT) / VEC_LENGTH];};
+	union { __declspec(align(ALIGNMENT)) float weightsInputHidden[simdNumWeightsIH]; __mVec weightsInputHiddenVec[simdNumWeightsIH / VEC_LENGTH]; };
+	union { __declspec(align(ALIGNMENT)) float weightsHiddenOutput[simdNumHidden * NUMOUTPUT]; __mVec weightsHiddenOutputVec[(simdNumHidden * NUMOUTPUT) / VEC_LENGTH]; };
 	// training data	
 	union { __declspec(align(ALIGNMENT)) float deltaInputHidden[simdNumWeightsIH]; __mVec deltaInputHiddenVec[simdNumWeightsIH / VEC_LENGTH]; };
 	union { __declspec(align(ALIGNMENT)) float deltaHiddenOutput[simdNumHidden * NUMOUTPUT + 10]; __mVec deltaHiddenOutputVec[(simdNumHidden * NUMOUTPUT + 10) / VEC_LENGTH]; };
