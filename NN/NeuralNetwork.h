@@ -23,21 +23,21 @@ inline static constexpr int getClosestDiv(int i, int div) { return ((i >> div) +
 // Free to change defines
 //-------------------------------------------------------------------------
 // Reference speed to calculate speedup
-#define REFSPEED 3300.0
-
+#define REFSPEED 4000
+#define VERIFY
+// It is OPTIMIZED FOR SSE but also works with AVX.
 // Default is that everything is vectorized (SSE | VECTORIZE_ALL)
 // Otherwise you had to specify all VECTORIZE_* you want to use 
 // (e.g. SIMD (SSE | VECTORIZE_BACKPROPAGATE | VECTORIZE_EVALUATE)) - To disable just add "& OFF"
 // (e.g. SIMD(AVX | VECTORIZE_ALL)
-#define SIMD (AVX | VECTORIZE_ALL ) //& OFF
+#define SIMD (SSE | VECTORIZE_ALL )
 
 // If using AVX and have AVX2, please define it - Microsoft compiler doesn't have a predefine
 #ifndef AVX2
 //#define AVX2
 #endif
 
-//#define SIMD_EXPECTED_OUTPUTS
-// Works only for current network layout and with SSE
+// Works only for current network layout and with SSE / not so beneficial
 //#define SIMD_OPTIMIZED_SECIAL_CASE_BACKPROP 
 
 #if SIMD & SSE
@@ -52,6 +52,7 @@ typedef __m128i __mVeci;
 static constexpr int simdNumHidden = getClosestDiv(NUMHIDDEN + 1, 2); 
 static constexpr int simdNumOutput = getClosestDiv(NUMOUTPUT, 2);
 static constexpr int simdNumInput = getClosestDiv(INPUTSIZE + 1, 2);
+static constexpr int simdNumWeightsIH = getClosestDiv((INPUTSIZE + 1) * (NUMHIDDEN + 1), 2);
 
 inline static __mVec _mVec_setr_ps(float a, float b, float c, float d, float e, float f, float g, float h) { return _mm_setr_ps(a, b, c, d); };
 inline static __mVeci _mVec_setr_epi32(int a, int b, int c, int d, int e, int f, int g, int h) { return _mm_setr_epi32(a, b, c, d); };
@@ -69,6 +70,7 @@ inline static const int getClosestDivOf8(int i) { return ((i >> 3) + (bool)(i & 
 static constexpr int simdNumHidden = getClosestDiv(NUMHIDDEN + 1, 3);
 static constexpr int simdNumOutput = getClosestDiv(NUMOUTPUT, 3);
 static constexpr int simdNumInput = getClosestDiv(INPUTSIZE + 1, 3);
+static constexpr int simdNumWeightsIH = getClosestDiv((INPUTSIZE + 1) * (NUMHIDDEN + 1), 3);
 
 #define _mm_setzero_ps _mm256_setzero_ps
 #define _mm_mul_ps _mm256_mul_ps
@@ -136,7 +138,11 @@ namespace Tmpl8 {
 struct TrainingEntry
 {
 	float inputs[INPUTSIZE];
+#if SIMD != OFF
+	int expected[simdNumOutput];
+#else
 	int expected[NUMOUTPUT];
+#endif
 };
 
 struct TrainingSet
@@ -203,11 +209,11 @@ public:
 private:
 #if SIMD != OFF
 	__declspec(align(16)) int clampedOutputs[simdNumOutput];
-	union {	__declspec(align(ALIGNMENT)) float weightsInputHidden[(INPUTSIZE + 1) * (NUMHIDDEN + 1) + 1]; __mVec weightsInputHiddenVec[((INPUTSIZE + 1) * (NUMHIDDEN + 1) + 1) / VEC_LENGTH];};
-	union {	__declspec(align(ALIGNMENT)) float weightsHiddenOutput[simdNumHidden * NUMOUTPUT]; __mVec weightsHiddenOutputVec[simdNumHidden * NUMOUTPUT / VEC_LENGTH];};
+	union {	__declspec(align(ALIGNMENT)) float weightsInputHidden[simdNumWeightsIH]; __mVec weightsInputHiddenVec[simdNumWeightsIH / VEC_LENGTH];};
+	union {	__declspec(align(ALIGNMENT)) float weightsHiddenOutput[simdNumHidden * NUMOUTPUT]; __mVec weightsHiddenOutputVec[(simdNumHidden * NUMOUTPUT) / VEC_LENGTH];};
 	// training data	
-	union { __declspec(align(ALIGNMENT)) float deltaInputHidden[(INPUTSIZE + 1) * (NUMHIDDEN + 1) + 1]; __mVec deltaInputHiddenVec[((INPUTSIZE + 1) * (NUMHIDDEN + 1) + 1) / VEC_LENGTH]; };
-	union { __declspec(align(ALIGNMENT)) float deltaHiddenOutput[simdNumHidden * NUMOUTPUT+10]; __mVec deltaHiddenOutputVec[(simdNumHidden * NUMOUTPUT + 10) / VEC_LENGTH]; };
+	union { __declspec(align(ALIGNMENT)) float deltaInputHidden[simdNumWeightsIH]; __mVec deltaInputHiddenVec[simdNumWeightsIH / VEC_LENGTH]; };
+	union { __declspec(align(ALIGNMENT)) float deltaHiddenOutput[simdNumHidden * NUMOUTPUT + 10]; __mVec deltaHiddenOutputVec[(simdNumHidden * NUMOUTPUT + 10) / VEC_LENGTH]; };
 	union { __declspec(align(ALIGNMENT)) float errorGradientsHidden[simdNumHidden]; __mVec errorGradientsHiddenVec[simdNumHidden / VEC_LENGTH]; };
 #ifdef SIMD_OPTIMIZED_SECIAL_CASE_BACKPROP
 	union { __declspec(align(ALIGNMENT)) float errorGradientsOutput[20]; __mVec errorGradientsOutputVec[20 / VEC_LENGTH]; };
